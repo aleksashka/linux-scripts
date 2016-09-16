@@ -40,7 +40,9 @@ for host in ${HOSTNAMES[@]}; do
 		echo "RUNNING SSH-COPY-ID ${name}@${host}"
 		ssh-copy-id ${name}@${host}
 		if [[ "$?" == "0" && "$name" == "root" ]]; then
-			echo "ADD ROOT COMMAND TO THE SYSTEM"
+			echo "RUNNING ROOT COMMANDS FOR: ${name}@${host}"
+			ssh ${name}@${host} 'echo "set background=dark" >> /etc/vimrc'
+			ssh ${name}@${host} 'bash' < bash-color.sh
 		fi
 		echo
 	done
