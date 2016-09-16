@@ -1,17 +1,22 @@
-# set root to red
+# Set root to red
 root_cursor_color='#FF0000'
 root_prompt_color='196'
-# set user colors
+
+# Set user colors
+# Yellowish
+cursor_color='#AFAF00'
+prompt_color='142'
+# Blueish
 cursor_color='#0087FF'
 prompt_color='33'
 
 case "$TERM" in
 xterm*|rxvt*|vte*)
-   PS1='\[\e[38;5;'$prompt_color'm\][ \t ] [ \u@\h ] [ $PWD ]\n'
-   [[ $UID == 0 ]] && { prompt_color=$root_prompt_color;cursor_color=$root_cursor_color; }
-   PS1="$PS1"'\[\e[m\e]12;'$cursor_color'\a\e[38;5;'$prompt_color'm\]\$ \[\e[m\]'
-   ;;
+  PS1='\[\e[38;5;'$prompt_color'm\][ \t ] [ \u@\h ] [ $PWD ]\n'
+  [[ $UID == 0 ]] && { prompt_color=$root_prompt_color;cursor_color=$root_cursor_color; }
+  PS1="$PS1"'\[\e[m\e]12;'$cursor_color'\a\e[38;5;'$prompt_color'm\]\$ \[\e[m\]'
+  ;;
 *)
-   PS1='\t j\j \u@\h:\w\n\$ '
-   ;;
+  PS1='\t j\j \u@\h:\w\n\$ '
+  ;;
 esac
