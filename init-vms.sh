@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.1
+# version 0.2
 # Choose one or all predefined values from an array
 # and do some operations
 # I created this script to automate VM preparation after reset
@@ -42,8 +42,8 @@ for host in ${HOSTNAMES[@]}; do
 		if [[ "$?" == "0" && "$name" == "root" ]]; then
 			echo "RUNNING ROOT COMMANDS FOR: ${name}@${host}"
 			ssh ${name}@${host} 'echo "set background=dark" >> /etc/vimrc'
-			ssh ${name}@${host} 'bash' < ${host}.sh
-			ssh ${name}@${host} 'bash' < bash-color.sh
+			[[ -f ${host}.sh ]]	&& ssh ${name}@${host} 'bash' < ${host}.sh
+			[[ -f root.sh ]]	&& ssh ${name}@${host} 'bash' < root.sh
 		fi
 		echo
 	done

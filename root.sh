@@ -24,3 +24,10 @@ xterm*|rxvt*|vte*)
 	;;
 esac
 EOF
+cat >> /etc/vimrc << \EOF
+"########################################
+"# Automatically added by script
+set background=dark
+set tabstop=4
+"########################################
+EOF
