@@ -42,6 +42,7 @@ for host in ${HOSTNAMES[@]}; do
 		if [[ "$?" == "0" && "$name" == "root" ]]; then
 			echo "RUNNING ROOT COMMANDS FOR: ${name}@${host}"
 			ssh ${name}@${host} 'echo "set background=dark" >> /etc/vimrc'
+			ssh ${name}@${host} 'bash' < ${host}.sh
 			ssh ${name}@${host} 'bash' < bash-color.sh
 		fi
 		echo

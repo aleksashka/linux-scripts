@@ -8,17 +8,10 @@
 #                     +-- Do not expand variable definitions to actual values
 #                     |
 cat >> /etc/bashrc << \EOF
+
 # Set root to red
 root_cursor_color='#FF0000'
 root_prompt_color='196'
-
-# Set user colors
-# Yellowish
-cursor_color='#AFAF00'
-prompt_color='142'
-# Blueish
-cursor_color='#0087FF'
-prompt_color='33'
 
 case "$TERM" in
 xterm*|rxvt*|vte*)
