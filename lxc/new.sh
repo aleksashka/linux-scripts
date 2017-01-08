@@ -14,7 +14,7 @@ LXC_RAM=512
 LXC_REL=7
 LXC_OSV=centos7.0
 LXC_NET=default
-LXC_PKG="systemd passwd yum centos-release vim-enhanced openssh-server procps-ng iproute net-tools dhclient sudo rootfiles tcpdump"
+LXC_PKG="systemd passwd yum centos-release vim-enhanced openssh-server procps-ng iproute net-tools dhclient sudo rootfiles tcpdump firewalld"
 
 if [ "$#" -gt 0 ]; then
     LXC_NAME=${1}
