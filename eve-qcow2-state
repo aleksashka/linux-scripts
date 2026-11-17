@@ -9,6 +9,7 @@
 #
 #   save <name>     -> renames the current child to a state, then creates a new empty child on top
 #   restore <name>  -> deletes the current child, creates a new empty child on top of <name>
+#   list            -> shows which states exist on which nodes, and what each node runs on now
 #
 # Run as root from inside the lab folder: /opt/unetlab/tmp/<pod>/<lab_id>
 
@@ -27,6 +28,7 @@ usage() {
 Usage (run as root from /opt/unetlab/tmp/<pod>/<lab_id>):
   ${0##*/} save    <state> [node_id ...]   freeze current disk as <state>, continue on a fresh child
   ${0##*/} restore <state> [node_id ...]   discard current changes, start a fresh child of <state>
+  ${0##*/} list [node_id ...]              show saved states per node and the current one
 State name: letters, digits, underscore. 'base' = original image (restore only).
 Without node ids: every node 1..99 that has a $DISK.
 EOF
@@ -66,14 +68,23 @@ root_of() {
 # Step 1: parse and check the command line
 # ------------------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || { echo "Run as root."; exit 1; }     # only root can manage these files
-[ $# -ge 2 ] || usage                                        # need at least: action + state
-ACTION=$1; STATE=$2
-shift 2                                                      # what remains in "$@" = node ids
-case "$ACTION" in save|restore) ;; *) usage ;; esac          # only these two actions exist
-# State name must be only letters, digits and underscore (safe for file names)
-[[ $STATE =~ ^[A-Za-z0-9_]+$ ]] || { echo "State name: only letters, digits and underscore."; exit 1; }
-# 'base' is the original image, so nothing can be saved under that name
-[ "$ACTION" = save ] && [ "$STATE" = base ] && { echo "'base' is reserved for the original image."; exit 1; }
+[ $# -ge 1 ] || usage                                        # need at least an action
+ACTION=$1
+shift                                                        # drop the action from "$@"
+case "$ACTION" in
+    list)
+        STATE="" ;;                                          # list takes no state name
+    save|restore)
+        [ $# -ge 1 ] || usage                                # these need a state name
+        STATE=$1
+        shift                                                # what remains in "$@" = node ids
+        # State name must be only letters, digits and underscore (safe for file names)
+        [[ $STATE =~ ^[A-Za-z0-9_]+$ ]] || { echo "State name: only letters, digits and underscore."; exit 1; }
+        # 'base' is the original image, so nothing can be saved under that name
+        [ "$ACTION" = save ] && [ "$STATE" = base ] && { echo "'base' is reserved for the original image."; exit 1; }
+        ;;
+    *) usage ;;
+esac
 
 # ------------------------------------------------------------------------------
 # Step 2: get pod and lab id from the current directory
@@ -105,6 +116,53 @@ else
 fi
 [ ${#NODES[@]} -gt 0 ] || { echo "No nodes found."; exit 1; }          # ${#NODES[@]} = array length
 echo "Pod $POD, lab $LAB, nodes: ${NODES[*]}"
+
+# ------------------------------------------------------------------------------
+# list: show states and the current parent of each node, then exit (read only)
+# ------------------------------------------------------------------------------
+if [ "$ACTION" = list ]; then
+    declare -A HAVE       # state name -> "node node node " (nodes that have this state)
+    declare -A CURRENT    # node id -> what its live disk sits on now
+    for N in "${NODES[@]}"; do
+        D="$LAB_PATH/$N"
+        for f in "$D/$DISK".state_*; do          # every saved state file of this node
+            [ -f "$f" ] || continue                # glob matched nothing: skip the literal pattern
+            HAVE[${f##*.state_}]+="$N "            # ${f##*.state_} = text after ".state_"
+        done
+        B=$(backing_of "$D/$DISK")
+        case "$B" in
+            "")                   CURRENT[$N]="(no backing file)" ;;
+            "$D/${DISK}.state_"*) CURRENT[$N]=${B##*.state_} ;;
+            *) if [ -z "$(backing_of "$B")" ]; then CURRENT[$N]=base; else CURRENT[$N]="? ($B)"; fi ;;
+        esac
+    done
+
+    echo
+    if [ ${#HAVE[@]} -eq 0 ]; then
+        echo "No saved states."
+    else
+        printf '%-24s %s\n' STATE NODES
+        # ${!HAVE[@]} = all keys of the array; sort them by name
+        for S in $(printf '%s\n' "${!HAVE[@]}" | sort); do
+            missing=()
+            for N in "${NODES[@]}"; do
+                [[ " ${HAVE[$S]}" == *" $N "* ]] || missing+=("$N")
+            done
+            if [ ${#missing[@]} -eq 0 ]; then
+                printf '%-24s %s(all)\n' "$S" "${HAVE[$S]}"
+            else
+                printf '%-24s %s(missing on: %s)\n' "$S" "${HAVE[$S]}" "${missing[*]}"
+            fi
+        done
+    fi
+
+    echo
+    echo "Current (what each live disk sits on):"
+    for N in "${NODES[@]}"; do
+        printf '  node %-4s %s\n' "$N" "${CURRENT[$N]}"
+    done
+    exit 0
+fi
 
 # ------------------------------------------------------------------------------
 # Step 4: make sure the selected nodes are stopped
