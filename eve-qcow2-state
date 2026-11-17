@@ -164,12 +164,22 @@ done
 for N in "${NODES[@]}"; do
     CUR="$LAB_PATH/$N/$DISK"
     T=${TARGET[$N]}
+    # What to write into the child as its backing file. On satellites qemu runs chrooted
+    # into the node folder, so /opt/unetlab/tmp/... does not exist for it. A state file
+    # lives next to the child, so store just its name: qemu resolves a relative backing
+    # path against the child's own folder, which works inside and outside the jail.
+    # The base image stays absolute (/opt/unetlab/addons/... is visible inside the jail).
+    if [ "$(dirname "$T")" = "$LAB_PATH/$N" ]; then
+        BACK=$(basename "$T")
+    else
+        BACK=$T
+    fi
 
     if [ "$ACTION" = save ]; then
         # Freeze: rename the live disk to the state file...
         mv "$CUR" "$T" || { echo "Node $N: rename failed"; exit 1; }
         # ...then create a new empty child on top of it under the original name
-        if ! "$QEMU_IMG" create -f qcow2 -b "$T" -F qcow2 "$CUR" >/dev/null; then
+        if ! "$QEMU_IMG" create -f qcow2 -b "$BACK" -F qcow2 "$CUR" >/dev/null; then
             mv "$T" "$CUR"      # roll back: put the original disk back in place
             echo "Node $N: child creation failed, rolled back"
             exit 1
@@ -179,7 +189,7 @@ for N in "${NODES[@]}"; do
         # Restore: create the new child under a temporary name first (-b parent, -F parent format)...
         # ...and only if that works, move it over the old disk (-f = overwrite without asking).
         # This way a failure never leaves the node without a disk.
-        "$QEMU_IMG" create -f qcow2 -b "$T" -F qcow2 "$CUR.new" >/dev/null \
+        "$QEMU_IMG" create -f qcow2 -b "$BACK" -F qcow2 "$CUR.new" >/dev/null \
             && mv -f "$CUR.new" "$CUR" \
             || { rm -f "$CUR.new"; echo "Node $N: failed, disk left unchanged"; exit 1; }
         echo "Node $N: fresh child of $(basename "$T")"
