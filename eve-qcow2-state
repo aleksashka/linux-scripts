@@ -12,6 +12,30 @@
 #   list            -> shows which states exist on which nodes, and what each node runs on now
 #
 # Run as root from inside the lab folder: /opt/unetlab/tmp/<pod>/<lab_id>
+#
+# TODO: "delete <state> [node_id ...]" - remove a saved state safely. Design notes:
+#   - States form a TREE per node, not a line: restore s1 + save s3 gives s1 two children
+#     (s2 and s3). The live child is also a dependent of whatever state it sits on.
+#     To find dependents: run backing_of on every virtioa.qcow2* file in the node folder.
+#   - 'base' can never be deleted (it is shared by all nodes and labs).
+#   - No dependents (leaf)     -> plain rm.
+#   - Exactly one dependent    -> merge the state into it: "qemu-img rebase -F qcow2
+#     -b <parent of state> <dependent>" (safe mode, no -u) copies the needed data into the
+#     dependent, then rm the state. Keep the -b path relative when the parent is a state.
+#     (qemu-img commit would be faster for a small dependent, but it writes into the state,
+#     so it is only safe when nothing else depends on it, and the result has the wrong name.)
+#   - Several dependents       -> refuse by default; with --force rebase each of them
+#     (duplicates the data per dependent, so check free space first).
+#   - Rebasing changes the dependent, so if the dependent is the live child the node must be
+#     stopped (reuse the Step 4 running check). Rebasing other states is fine while running
+#     only if the running node's chain does not include them - simplest: require stopped.
+#   - In-place rebase is not atomic: if interrupted, the dependent is broken. Safer: copy the
+#     dependent (cp --reflink=auto), rebase the copy, check it, then mv it over the original.
+#   - Free space: worst case each rebase grows a dependent by the state's on-disk size (df).
+#   - Same two-pass rule as save/restore: validate all nodes, print the plan
+#     ("node 5: rm state_x" / "node 6: merge state_x into state_y (~3.2G)"), ask y/N,
+#     then act. A node that lacks the state: skip with a warning, do not fail.
+#   - "list" should then print the tree (state -> parent) so the plan is easy to read.
 
 set -u   # treat use of an unset variable as an error (catches typos)
 
