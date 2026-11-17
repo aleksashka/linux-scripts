@@ -1,0 +1,193 @@
+#!/bin/bash
+# eve-qcow2-state: save / restore qcow2 disk states of EVE-NG qemu nodes.
+#
+# Vocabulary used in this script:
+#   base   = the original image from /opt/unetlab/addons/qemu/... (never modified)
+#   state  = a frozen copy of a node's disk, stored next to it as virtioa.qcow2.state_<name>
+#   child  = the live virtioa.qcow2 of a node: a small overlay file whose "backing file" is a
+#            state or the base. All changes made while the VM runs go into the child only.
+#
+#   save <name>     -> renames the current child to a state, then creates a new empty child on top
+#   restore <name>  -> deletes the current child, creates a new empty child on top of <name>
+#
+# Run as root from inside the lab folder: /opt/unetlab/tmp/<pod>/<lab_id>
+
+set -u   # treat use of an unset variable as an error (catches typos)
+
+DISK="virtioa.qcow2"                  # disk file name inside every node folder
+QEMU_IMG="/opt/qemu/bin/qemu-img"     # EVE-NG's own qemu-img
+[ -x "$QEMU_IMG" ] || QEMU_IMG="$(command -v qemu-img)"   # fall back to the one in PATH
+
+# ------------------------------------------------------------------------------
+# usage: print help and exit with an error code
+# ------------------------------------------------------------------------------
+usage() {
+    # ${0##*/} = name of this script without the directory part
+    cat <<EOF
+Usage (run as root from /opt/unetlab/tmp/<pod>/<lab_id>):
+  ${0##*/} save    <state> [node_id ...]   freeze current disk as <state>, continue on a fresh child
+  ${0##*/} restore <state> [node_id ...]   discard current changes, start a fresh child of <state>
+State name: letters, digits, underscore. 'base' = original image (restore only).
+Without node ids: every node 1..99 that has a $DISK.
+EOF
+    exit 1
+}
+
+# ------------------------------------------------------------------------------
+# backing_of <file>: print the backing file (parent) of a qcow2 file, or nothing
+# ------------------------------------------------------------------------------
+backing_of() {
+    local line
+    # "qemu-img info" prints a line like "backing file: <path>"; sed keeps only what follows it
+    line=$("$QEMU_IMG" info "$1" 2>/dev/null | sed -n 's/^backing file: //p')
+    # If the stored path is relative, qemu-img appends "(actual path: /full/path)".
+    # In that case return the full path from the brackets, otherwise return the line as is.
+    if [[ $line =~ \(actual\ path:\ (.*)\)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$line"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# root_of <file>: follow the backing chain to its end and print the last file (the base image)
+# ------------------------------------------------------------------------------
+root_of() {
+    local f=$1 b
+    # Loop: ask for the parent of f; stop when there is none (b is empty).
+    # In "while A; B; do", the loop continues as long as the LAST command (B) succeeds.
+    while b=$(backing_of "$f"); [ -n "$b" ]; do
+        f=$b      # move one step up the chain
+    done
+    echo "$f"
+}
+
+# ------------------------------------------------------------------------------
+# Step 1: parse and check the command line
+# ------------------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || { echo "Run as root."; exit 1; }     # only root can manage these files
+[ $# -ge 2 ] || usage                                        # need at least: action + state
+ACTION=$1; STATE=$2
+shift 2                                                      # what remains in "$@" = node ids
+case "$ACTION" in save|restore) ;; *) usage ;; esac          # only these two actions exist
+# State name must be only letters, digits and underscore (safe for file names)
+[[ $STATE =~ ^[A-Za-z0-9_]+$ ]] || { echo "State name: only letters, digits and underscore."; exit 1; }
+# 'base' is the original image, so nothing can be saved under that name
+[ "$ACTION" = save ] && [ "$STATE" = base ] && { echo "'base' is reserved for the original image."; exit 1; }
+
+# ------------------------------------------------------------------------------
+# Step 2: get pod and lab id from the current directory
+# ------------------------------------------------------------------------------
+LAB_PATH=$(pwd -P)    # current directory with symlinks resolved
+# The path must look like /opt/unetlab/tmp/<digits>/<36-char uuid>; the two (...) groups are captured
+if [[ $LAB_PATH =~ ^/opt/unetlab/tmp/([0-9]+)/([0-9a-fA-F-]{36})$ ]]; then
+    POD=${BASH_REMATCH[1]}     # first (...) group = pod id
+    LAB=${BASH_REMATCH[2]}     # second (...) group = lab id
+else
+    echo "cd into the lab folder first (/opt/unetlab/tmp/<pod>/<lab_id>), now in: $LAB_PATH"
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Step 3: build the node list (from arguments, or auto-detect)
+# ------------------------------------------------------------------------------
+NODES=()
+if [ $# -gt 0 ]; then
+    for n in "$@"; do
+        [[ $n =~ ^[0-9]+$ ]] || { echo "Bad node id: $n"; exit 1; }    # must be a number
+        NODES+=("$n")                                                  # append to the array
+    done
+else
+    # No ids given: take every node 1..99 whose folder contains a disk file
+    for n in $(seq 1 99); do
+        [ -f "$LAB_PATH/$n/$DISK" ] && NODES+=("$n")
+    done
+fi
+[ ${#NODES[@]} -gt 0 ] || { echo "No nodes found."; exit 1; }          # ${#NODES[@]} = array length
+echo "Pod $POD, lab $LAB, nodes: ${NODES[*]}"
+
+# ------------------------------------------------------------------------------
+# Step 4: make sure the selected nodes are stopped
+# ------------------------------------------------------------------------------
+# EVE starts each node's wrapper/qemu with the node folder as its working directory,
+# so a process whose cwd equals the node folder means that node is running.
+# readlink on /proc/<pid>/cwd prints one directory per process; errors are hidden.
+CWDS=$(readlink /proc/[0-9]*/cwd 2>/dev/null)
+RUNNING=()
+for N in "${NODES[@]}"; do
+    # grep -x = whole-line match, -F = plain text (not regex), -q = no output, only exit code
+    grep -qxF "$LAB_PATH/$N" <<<"$CWDS" && RUNNING+=("$N")
+done
+if [ ${#RUNNING[@]} -gt 0 ]; then
+    echo "ERROR: node(s) still running: ${RUNNING[*]}. Stop them first."
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Step 5 (pass 1): validate EVERY node before changing ANYTHING
+# ------------------------------------------------------------------------------
+declare -A TARGET     # associative array: node id -> full path of the state file to use
+for N in "${NODES[@]}"; do
+    D="$LAB_PATH/$N"            # node folder
+    CUR="$D/$DISK"              # the node's current (live) disk
+    # Must be a regular file, not a symlink and not missing
+    [ -f "$CUR" ] && [ ! -L "$CUR" ] || { echo "Node $N: $CUR missing or is a symlink"; exit 1; }
+
+    B=$(backing_of "$CUR")      # parent of the current disk
+    [ -n "$B" ] || { echo "Node $N: disk has no backing file, refusing"; exit 1; }
+    # Safety check so we never delete a disk that holds unique data. The parent must be either:
+    #  - a saved state in this node folder, or
+    #  - the base image (an image that itself has no parent)
+    case "$B" in
+        "$D/${DISK}.state_"*) ;;     # parent is a saved state: OK
+        *) [ -z "$(backing_of "$B")" ] || { echo "Node $N: unexpected backing chain ($B), refusing"; exit 1; } ;;
+    esac
+
+    # Work out which file this node's new child should sit on
+    if [ "$STATE" = base ]; then
+        T=$(root_of "$CUR")                 # the original image at the end of the chain
+    else
+        T="$D/${DISK}.state_${STATE}"       # the saved state file for this node
+    fi
+
+    if [ "$ACTION" = save ]; then
+        [ ! -e "$T" ] || { echo "Node $N: $T already exists"; exit 1; }       # never overwrite a state
+    else
+        [ -f "$T" ] || { echo "Node $N: state '$STATE' not found ($T)"; exit 1; }   # state must exist
+    fi
+    TARGET[$N]=$T       # remember the choice for pass 2
+done
+
+# ------------------------------------------------------------------------------
+# Step 6 (pass 2): do the actual work (all nodes passed validation)
+# ------------------------------------------------------------------------------
+for N in "${NODES[@]}"; do
+    CUR="$LAB_PATH/$N/$DISK"
+    T=${TARGET[$N]}
+
+    if [ "$ACTION" = save ]; then
+        # Freeze: rename the live disk to the state file...
+        mv "$CUR" "$T" || { echo "Node $N: rename failed"; exit 1; }
+        # ...then create a new empty child on top of it under the original name
+        if ! "$QEMU_IMG" create -f qcow2 -b "$T" -F qcow2 "$CUR" >/dev/null; then
+            mv "$T" "$CUR"      # roll back: put the original disk back in place
+            echo "Node $N: child creation failed, rolled back"
+            exit 1
+        fi
+        echo "Node $N: saved as ${DISK}.state_${STATE}, running on a fresh child"
+    else
+        # Restore: create the new child under a temporary name first (-b parent, -F parent format)...
+        # ...and only if that works, move it over the old disk (-f = overwrite without asking).
+        # This way a failure never leaves the node without a disk.
+        "$QEMU_IMG" create -f qcow2 -b "$T" -F qcow2 "$CUR.new" >/dev/null \
+            && mv -f "$CUR.new" "$CUR" \
+            || { rm -f "$CUR.new"; echo "Node $N: failed, disk left unchanged"; exit 1; }
+        echo "Node $N: fresh child of $(basename "$T")"
+    fi
+done
+
+# ------------------------------------------------------------------------------
+# Step 7: let EVE-NG fix ownership/permissions of the new files
+# ------------------------------------------------------------------------------
+/opt/unetlab/wrappers/unl_wrapper -a fixpermissions
+echo "Done. Start the nodes."
