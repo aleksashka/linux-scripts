@@ -184,20 +184,20 @@ for N in "${NODES[@]}"; do
             echo "Node $N: child creation failed, rolled back"
             exit 1
         fi
+        # Give the new child the same owner and mode as the disk it replaces (now the state)
+        chown --reference="$T" "$CUR" && chmod --reference="$T" "$CUR" \
+            || echo "Node $N: WARNING: could not copy owner/permissions to $CUR"
         echo "Node $N: saved as ${DISK}.state_${STATE}, running on a fresh child"
     else
         # Restore: create the new child under a temporary name first (-b parent, -F parent format)...
         # ...and only if that works, move it over the old disk (-f = overwrite without asking).
         # This way a failure never leaves the node without a disk.
+        # The new child copies owner and mode from the disk it replaces.
         "$QEMU_IMG" create -f qcow2 -b "$BACK" -F qcow2 "$CUR.new" >/dev/null \
+            && chown --reference="$CUR" "$CUR.new" && chmod --reference="$CUR" "$CUR.new" \
             && mv -f "$CUR.new" "$CUR" \
             || { rm -f "$CUR.new"; echo "Node $N: failed, disk left unchanged"; exit 1; }
         echo "Node $N: fresh child of $(basename "$T")"
     fi
 done
-
-# ------------------------------------------------------------------------------
-# Step 7: let EVE-NG fix ownership/permissions of the new files
-# ------------------------------------------------------------------------------
-/opt/unetlab/wrappers/unl_wrapper -a fixpermissions
 echo "Done. Start the nodes."
